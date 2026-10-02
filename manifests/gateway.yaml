@@ -1,0 +1,69 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: demo-proxy
+  namespace: mtc-demo
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        replicas: 1
+      envoyService:
+        type: NodePort
+        externalTrafficPolicy: Cluster
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              ports:
+                - port: 80
+                  nodePort: 30080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: mtc-envoy
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: demo
+  namespace: mtc-demo
+spec:
+  gatewayClassName: mtc-envoy
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: demo-proxy
+  listeners:
+    - name: http
+      hostname: demo.local
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: web
+  namespace: mtc-demo
+spec:
+  parentRefs:
+    - name: demo
+      sectionName: http
+  hostnames: [demo.local]
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: web
+          port: 80
+

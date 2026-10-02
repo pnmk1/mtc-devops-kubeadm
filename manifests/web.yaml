@@ -1,0 +1,146 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: mtc-demo
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+      annotations:
+        mtc-devops/config-sha256: "${CONFIG_HASH}"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: prepare-log-directories
+          image: "${NGINX_IMAGE}"
+          command: [sh, -ec, 'mkdir -p /var/log/demo/raw /var/log/demo/state /var/log/demo/collected /fluentd-tmp/private; chmod 700 /fluentd-tmp/private']
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 32Mi}
+          volumeMounts:
+            - name: logs
+              mountPath: /var/log/demo
+            - name: fluentd-tmp
+              mountPath: /fluentd-tmp
+      containers:
+        - name: nginx
+          image: "${NGINX_IMAGE}"
+          command: [nginx, -c, /etc/demo/nginx.conf, -g, 'daemon off;']
+          ports:
+            - {name: http, containerPort: 8080}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 50m, memory: 32Mi}
+            limits: {cpu: 500m, memory: 128Mi}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - {name: web-config, mountPath: /etc/demo, readOnly: true}
+            - {name: logs, mountPath: /var/log/demo}
+            - {name: nginx-tmp, mountPath: /tmp}
+        - name: exporter
+          image: "${EXPORTER_IMAGE}"
+          args:
+            - --nginx.scrape-uri=http://127.0.0.1:8081/stub_status
+          ports:
+            - {name: metrics, containerPort: 9113}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          readinessProbe:
+            httpGet: {path: /metrics, port: metrics}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /metrics, port: metrics}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+        - name: fluentd
+          image: "${FLUENTD_IMAGE}"
+          command: [fluentd]
+          args: [-c, /etc/demo/fluent.conf]
+          env:
+            - {name: TMPDIR, value: /tmp/private}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 384Mi}
+          readinessProbe:
+            exec:
+              command: [sh, -ec, 'test -s /var/log/demo/state/access.pos && test -s /var/log/demo/state/error.pos']
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - {name: fluentd-config, mountPath: /etc/demo, readOnly: true}
+            - {name: logs, mountPath: /var/log/demo}
+            - {name: fluentd-tmp, mountPath: /tmp}
+      volumes:
+        - name: web-config
+          configMap: {name: web-config}
+        - name: fluentd-config
+          configMap: {name: fluentd-config}
+        - name: logs
+          persistentVolumeClaim: {claimName: web-logs}
+        - name: nginx-tmp
+          emptyDir: {}
+        - name: fluentd-tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: mtc-demo
+spec:
+  selector: {app: web}
+  ports:
+    - {name: http, port: 80, targetPort: http}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-metrics
+  namespace: mtc-demo
+spec:
+  selector: {app: web}
+  ports:
+    - {name: metrics, port: 9113, targetPort: metrics}
+

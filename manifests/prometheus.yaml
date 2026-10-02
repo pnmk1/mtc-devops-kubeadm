@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: mtc-demo
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+      annotations:
+        mtc-devops/config-sha256: "${CONFIG_HASH}"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: prometheus
+          image: "${PROMETHEUS_IMAGE}"
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=24h
+            - --storage.tsdb.retention.size=2GB
+          ports:
+            - {name: http, containerPort: 9090}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 1000m, memory: 768Mi}
+          startupProbe:
+            httpGet: {path: /-/ready, port: http}
+            failureThreshold: 60
+            periodSeconds: 5
+          readinessProbe:
+            httpGet: {path: /-/ready, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /-/healthy, port: http}
+            periodSeconds: 10
+          volumeMounts:
+            - {name: config, mountPath: /etc/prometheus, readOnly: true}
+            - {name: data, mountPath: /prometheus}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: config
+          configMap: {name: prometheus-config}
+        - name: data
+          persistentVolumeClaim: {claimName: prometheus-data}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: mtc-demo
+spec:
+  selector: {app: prometheus}
+  ports:
+    - {name: http, port: 9090, targetPort: http}
+
