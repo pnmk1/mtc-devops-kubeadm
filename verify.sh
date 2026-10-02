@@ -10,12 +10,23 @@ PF_PID=''
 cleanup() { [[ -z "$PF_PID" ]] || kill "$PF_PID" 2>/dev/null || true; }
 trap cleanup EXIT
 trap diagnostics ERR
+log 'Waiting for the Kubernetes API after boot.'
+API_READY=false
+for _ in $(seq 1 60); do
+  if kubectl --request-timeout=3s get --raw=/readyz > /dev/null 2>&1; then API_READY=true; break; fi
+  sleep 2
+done
+[[ "$API_READY" == true ]] || die 'Kubernetes API did not become ready; check clock synchronization, containerd and kubelet.'
 NODE_IP=${NODE_IP:-$(kubectl get nodes -l mtc-devops.storage=local -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')}
 BASE_URL="http://${NODE_IP}:30080"
 MARKER="mtc-$(date +%s)-${RANDOM}"
 
 log 'Checking node, workloads and Gateway conditions.'
 kubectl wait nodes -l mtc-devops.storage=local --for=condition=Ready --timeout=120s
+kubectl -n envoy-gateway-system rollout status deployment/envoy-gateway --timeout=180s
+for proxy in $(kubectl -n envoy-gateway-system get deployment -l gateway.envoyproxy.io/owning-gateway-name=demo,gateway.envoyproxy.io/owning-gateway-namespace=mtc-demo -o name); do
+  kubectl -n envoy-gateway-system rollout status "$proxy" --timeout=180s
+done
 kubectl -n "$NS" rollout status deployment/web --timeout=180s
 kubectl -n "$NS" rollout status deployment/prometheus --timeout=180s
 kubectl -n "$NS" wait gateway/demo --for=condition=Accepted --timeout=120s
@@ -37,7 +48,7 @@ for parent in parents:
 PY
 
 log 'Checking HTTP through Envoy NodePort.'
-curl --fail --silent --show-error --max-time 15 -H 'Host: demo.local' "$BASE_URL/?check=$MARKER" > "$OUT/http-body.txt"
+curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 2 --retry-max-time 60 --max-time 5 -H 'Host: demo.local' "$BASE_URL/?check=$MARKER" > "$OUT/http-body.txt"
 [[ $(cat "$OUT/http-body.txt") == 'Hello World!' ]] || die 'Unexpected HTTP response body.'
 WRONG_STATUS=$(curl --silent --show-error --max-time 15 -o "$OUT/wrong-host.txt" -w '%{http_code}' -H 'Host: wrong.invalid' "$BASE_URL/")
 [[ "$WRONG_STATUS" == 404 ]] || die "Expected wrong-host 404; received $WRONG_STATUS"

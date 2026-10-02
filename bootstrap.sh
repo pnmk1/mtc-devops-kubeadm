@@ -13,6 +13,20 @@ awk '/MemTotal/ {exit ($2 < 7500000)}' /proc/meminfo || die 'Allocate at least 8
 df -Pk /var | awk 'NR==2 {exit ($4 < 15000000)}' || die 'At least 15 GB free disk is required.'
 check_files
 
+log 'Ensuring Kubernetes starts only after time synchronization.'
+systemctl is-active --quiet systemd-timesyncd || die 'Enable systemd-timesyncd and provide working NTP before bootstrap.'
+systemctl enable systemd-time-wait-sync.service
+timeout 180s systemctl start systemd-time-wait-sync.service || die 'Clock did not synchronize within 180 seconds. Check NTP connectivity.'
+for service in containerd kubelet; do
+  install -d "/etc/systemd/system/$service.service.d"
+  cat > "/etc/systemd/system/$service.service.d/10-time-sync.conf" <<'UNIT'
+[Unit]
+Requires=systemd-time-wait-sync.service
+After=systemd-time-wait-sync.service time-sync.target
+UNIT
+done
+systemctl daemon-reload
+
 REAL_USER=${SUDO_USER:-root}
 USER_DIR=$(getent passwd "$REAL_USER" | cut -d: -f6)
 if [[ -z ${NODE_IP:-} && -f "$DATA_ROOT/cluster-ip" ]]; then
