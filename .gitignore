@@ -1,0 +1,15 @@
+.cache/
+.state/
+artifacts/
+__pycache__/
+*.pyc
+*.pem
+*.key
+*.p12
+*.pfx
+id_ed25519*
+kubeconfig*
+admin.conf
+.env
+!.env.example
+
